@@ -1,6 +1,6 @@
 import pandas as pd # import Pandas for working with large amounts of data
 import numpy as np
-import os # import Os to reference files on disk
+import os # import os to reference files on disk
 import cdsapi # import Copernicus dataset API library
 import xarray as xr # imports xarray to handle the 4D structure that copernicus data has (lat, long, pres, time)
 
