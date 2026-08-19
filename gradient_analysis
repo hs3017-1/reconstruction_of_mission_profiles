@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.patches as mpatches
+from matplotlib.ticker import MultipleLocator
+import seaborn as sn
+
+csv_file = "B67_030226_output.csv"
+df = pd.read_csv(csv_file)
+df['Date/Time'] = pd.to_datetime(df['Date/Time'])
+
+data = df.copy()
+
+time_raw = data["Timestamp"].astype(float).values # Ensures timestamp is a float in seconds
+
+# Remove exact duplicate timestamps so there won't be any divide by zero errors when calculating gradients
+non_duplicate_mask = np.insert(np.diff(time_raw) > 0, 0, True)
+data = data.loc[non_duplicate_mask].reset_index(drop=True)
+time = data["Timestamp"].astype(float).values
+
+# Check time always increases
+if len(time) > 1 and np.any(np.diff(time) <= 0):
+    raise ValueError("Timestamp array contains duplicates")
+
+# Calculate gradients
+dT_dt = np.gradient(data["Temperature (C)"], time)
+dh_dt = np.gradient(data["Altitude (m)"], time)
+
+data["dT_dt_min"] = dT_dt * 60.0  #°C / minute
+data["vertical_speed_ms"] = dh_dt  # m / second
+
+
+
+# Correct the pressure measurements by removing the effect of altitude change
+if "Pressure (hPa)" in data.columns:
+    press_val = data["Pressure (hPa)"].astype(float).values
+    dpress_dt_raw = np.gradient(press_val, time) * 60.0  # hPa / min
+
+# Standard atmosphere pressure gradient around 0.12 hPa/m (converted to minute rate)
+    expected_dpress_dt = -0.12 * (dh_dt * 60.0)
+    data["Pressure (hPa)_spike"] = (np.abs(dpress_dt_raw - expected_dpress_dt) > 5.0)
+
+# Standard rate of change thresholds per minute for other parameters
+check_thresholds = {
+    "Wind Speed": 5.0,
+    "True Air Speed": 10.0,  # 1m/s x 60 = 60m/min
+    "Relative Humidity (%)": 15.0,
+}
+
+for col, limit in check_thresholds.items():
+    if col in data.columns:
+        col_values = data[col].astype(float).values
+        dcol_dt = np.gradient(col_values, time) * 60.0
+        data[f"{col}_spike"] = np.abs(dcol_dt) > limit
+
+
+# Detecting extreme points
+gradient_signs = np.sign(dT_dt)
+data["is_extrema"] = np.append(np.diff(gradient_signs) != 0, False)
+
+
+# Classifying the anomalies into different categories based on most likely cause
+temp_rate = data["dT_dt_min"].abs()
+vert_speed = data["vertical_speed_ms"].abs()
+alt = data["Altitude (m)"]
+
+wind_spike = data.get("Wind Speed_spike", pd.Series(False, index=data.index))
+press_spike = data.get(
+    "Pressure (hPa)_spike", pd.Series(False, index=data.index)
+)
+speed_spike = data.get(
+    "True Air Speed_spike", pd.Series(False, index=data.index)
+)
+rh_spike = data.get(
+    "Relative Humidity (%)_spike", pd.Series(False, index=data.index)
+)
+
+
+expected_dT_dt_min = -0.0065 * (dh_dt * 60.0) # Standard environmental lapse rate (~6.5°C per 1000m or 0.0065°C/m)
+temp_residual = np.abs(data["dT_dt_min"] - expected_dT_dt_min) # Residual temperature change (rate unexplained by vertical movement)
+is_normal_climb_descent = (vert_speed >= 1.0) & (temp_residual < 2.0) # Normal lapse during climb/descent (so it's not an anomaly)
+is_low_inversion = ((temp_residual >= 2.0) & (vert_speed >= 1.0) & (alt <= 8000)) # A sudden rise in temperature at lower or medium heights, usually caused by a weather front or a layer of trapped air
+is_tropo = (temp_rate > 1.5) & (vert_speed >= 1.0) & (alt > 8000) # Passing through the high-altitude boundary where the air stops cooling as you go higher
+
+# Grid artifacts (sharp temperature change while level)
+is_grid = (
+    (temp_rate > 1.5) & (vert_speed < 1.0)
+) | ((wind_spike | rh_spike) & (vert_speed < 1.0))
+
+is_press = press_spike & (vert_speed < 1.0)
+is_speed = speed_spike & (vert_speed < 1.0) & (alt > 10.0)  # A safety limit that ignores readings near the ground (below 10 meters) so takeoff and landing data don't trigger false alarms
+
+# Enforce priority order using np.select
+conditions = [
+    is_grid,  # Priority 1: Grid artifacts
+    is_tropo,  # Priority 2: Tropopause inversions
+    is_speed,  # Priority 3: Airspeed anomalies
+    is_press,  # Priority 4: Dynamic pressure anomalies
+    temp_rate > 1.5,  # Priority 5: Generic temperature spikes
+]
+
+
+# Anomaly flag names
+data["anomaly_flag"] = "Normal"
+data.loc[is_low_inversion, "anomaly_flag"] = "Inversion / Front Boundary"
+data.loc[is_press, "anomaly_flag"] = "Pressure Discrepancy"
+data.loc[is_speed, "anomaly_flag"] = "Airspeed Anomaly"
+data.loc[is_tropo, "anomaly_flag"] = "Possible Tropopause Inversion"
+data.loc[is_grid, "anomaly_flag"] = "Numerical Grid Artifact"
+
+# Prints a summary
+summary = data["anomaly_flag"].value_counts()
+print("----- FLIGHT GRADIENT DIAGNOSTIC SUMMARY -----")
+print(f"Total Rows Processed        : {len(data)}")
+print(f"Local Extrema Found         : {data['is_extrema'].sum()}")
+print(f"Grid Artifacts Detected    : {summary.get('Numerical Grid Artifact', 0)}")
+print(f"Tropopause Passes Detected : {summary.get('Possible Tropopause Inversion', 0)}")
+print(f"Pressure Discrepancies     : {summary.get('Pressure Discrepancy', 0)}")
+print(f"Airspeed Anomalies         : {summary.get('Airspeed Anomaly', 0)}")
+print(f"Unclassified Spikes         : {summary.get('Unclassified Spike', 0)}")
+print("----------------------------------------------")
+
+
+
+ANOMALY_COLORS = {
+    "Numerical Grid Artifact": "#e74c3c",  # Red
+    "Possible Tropopause Inversion": "green", # Green
+    "Airspeed Anomaly": "#e67e22",  # Orange
+    "Pressure Discrepancy": "#f1c40f",  # Yellow
+    "Unclassified Spike": "#e84393",  # Pink
+    "Inversion / Front Boundary": "purple", # Purple
+    "Grid Artifacts Detected": "blue", # Blue
+}
+
+fig, ax1 = plt.subplots(figsize=(16, 8))
+
+time_x = data.get("Date/Time", data.index)
+
+# Primary axis = Temperature
+line_temp = ax1.plot(
+    time_x,
+    data["Temperature (C)"],
+    color="#2c3e50",
+    lw=1.5,
+    label="Temperature (°C)",
+)
+ax1.set_xlabel("Time", fontsize=11)
+ax1.set_ylabel("Temperature (°C)", color="#2c3e50", fontsize=11)
+ax1.tick_params(axis="y", labelcolor="#2c3e50")
+ax1.grid(True, linestyle="--", alpha=0.5)
+
+# Secondary axis = Altitude
+ax2 = ax1.twinx()
+line_alt = ax2.plot(
+    time_x,
+    data["Altitude (m)"],
+    color="#2980b9",
+    lw=1.5,
+    linestyle="--",  # Dashed line helps distinguish altitude from temperature
+    label="Altitude (m)",
+)
+ax2.set_ylabel("Altitude (m)", color="#2980b9", fontsize=11)
+ax2.tick_params(axis="y", labelcolor="#2980b9")
+
+# Hide secondary grid lines to prevent cluttering the plot
+ax2.grid(False)
+
+# Adding colored background bands to the graph to mark specific altitude or anomaly regions
+active_flags = data["anomaly_flag"].unique()
+for i in range(len(data)):
+    flag = data["anomaly_flag"].iloc[i]
+    if flag in ANOMALY_COLORS:
+        start_t = time_x.iloc[max(0, i - 1)] if i > 0 else time_x.iloc[i]
+        end_t = (
+            time_x.iloc[min(len(data) - 1, i + 1)]
+            if i < len(data) - 1
+            else time_x.iloc[i]
+        )
+        ax1.axvspan(
+            start_t, end_t, color=ANOMALY_COLORS[flag], alpha=0.3, linewidth=0
+        )
+
+# Combining graph keys into a single legend
+legend_handles = [
+    plt.Line2D([0], [0], color="#2c3e50", lw=1.5, label="Temperature (°C)"),
+    plt.Line2D(
+        [0], [0], color="#2980b9", lw=1.5, linestyle="--", label="Altitude (m)"
+    ),
+]
+for flag, color in ANOMALY_COLORS.items():
+    if flag in active_flags:
+        legend_handles.append(mpatches.Patch(color=color, alpha=0.3, label=flag))
+
+ax1.legend(handles=legend_handles, loc="upper right", frameon=True)
+
+plt.title(
+    "Flight Temperature & Altitude Series with Anomaly Diagnostics",
+    fontweight="bold",
+)
+plt.tight_layout()
+plt.savefig('flight_profile_with_anomaly.png', dpi=150)
+plt.show()
