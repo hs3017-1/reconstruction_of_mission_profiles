@@ -1,0 +1,108 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.ticker import MultipleLocator
+import seaborn as sns
+
+csv_file = "B67_030226_output.csv"
+df = pd.read_csv(csv_file)
+df['Date/Time'] = pd.to_datetime(df['Date/Time'])
+
+# Combined flight profile chart: Altitude and speed over time
+fig, ax1 = plt.subplots(figsize=(10, 5))
+color1 = 'tab:blue'
+ax1.set_xlabel('Time (UTC)')
+ax1.set_ylabel('Altitude (feet)', color=color1)
+ax1.plot(df['Date/Time'], df['Altitude'], color=color1, label='Altitude')
+ax1.tick_params(axis='y', labelcolor=color1)
+ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+
+ax2 = ax1.twinx()
+color2 = 'tab:red'
+ax2.set_ylabel('Ground Speed (knots)', color=color2)
+ax2.plot(df['Date/Time'], df['Speed'], color=color2, label='Speed', alpha=0.7)
+ax2.tick_params(axis='y', labelcolor=color2)
+
+plt.title('Flight Profile: Altitude and Speed over Time')
+fig.tight_layout()
+plt.savefig('flight_profile.png', dpi=150)
+plt.show()
+
+# Seperate flight profile chart: Altitude and speed over time
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+# Altitude
+ax1.plot(df['Date/Time'], df['Altitude'], color='tab:blue', linewidth=2)
+ax1.set_ylabel('Altitude (feet)', color='tab:blue', fontsize=11)
+ax1.tick_params(axis='y', labelcolor='tab:blue')
+ax1.set_title('Flight Altitude over Time', fontsize=12, fontweight='bold')
+
+# Speed
+ax2.plot(df['Date/Time'], df['Speed'], color='tab:red', linewidth=2, alpha=0.85)
+ax2.set_xlabel('Time (UTC)', fontsize=11)
+ax2.set_ylabel('Ground Speed (knots)', color='tab:red', fontsize=11)
+ax2.tick_params(axis='y', labelcolor='tab:red')
+ax2.set_title('Ground Speed over Time', fontsize=12, fontweight='bold')
+
+ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+fig.tight_layout()
+plt.savefig('flight_profile_stacked.png', dpi=150)
+plt.show()
+
+# Flight trajectory (Latitude vs longitude)
+plt.figure(figsize=(10, 4))
+plt.plot(df['Longitude'], df['Latitude'], color='purple', linewidth=2)
+plt.scatter(df['Longitude'].iloc[0], df['Latitude'].iloc[0], color='green', label='Start', zorder=5)
+plt.scatter(df['Longitude'].iloc[-1], df['Latitude'].iloc[-1], color='red', label='End', zorder=5)
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('Flight Trajectory (Ground Track)')
+plt.grid(visible=True)
+plt.legend()
+plt.tight_layout()
+plt.savefig('flight_trajectory.png', dpi=150)
+plt.show()
+
+# Altitude over time with temperature gradient
+fig, ax = plt.subplots(figsize=(11, 5))
+sc = ax.scatter(
+    df['Date/Time'],
+    df['Altitude'],
+    c=df['Temperature (C)'],
+    cmap='coolwarm',
+    s=12,
+    zorder=1,
+)
+
+cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+cbar.set_label('Air Temperature (°C)', fontsize=11)
+
+ax.set_xlabel('Time (UTC)', fontsize=11)
+ax.set_ylabel('Altitude (feet)', fontsize=11)
+ax.set_title('Flight Profile: Altitude over Time with Temperature Gradient',fontweight='bold')
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+ax.grid(True, linestyle=':', alpha=0.6)
+cbar.ax.invert_yaxis()
+plt.tight_layout()
+plt.savefig('flight_profile_with_temp.png', dpi=150)
+plt.show()
+
+# Temperature over time
+plt.figure(figsize=(10, 6))
+plt.plot(df['Date/Time'], df['Temperature (C)'])
+plt.ylabel('Temperature (°C)')
+plt.xlabel('Time (UTC)')
+plt.title('Temperature over Time',fontweight='bold')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Mach number over time
+plt.figure(figsize=(10, 6))
+plt.plot(df['Date/Time'], df['Mach Number'])
+plt.ylabel('Mach Number')
+plt.xlabel('Time (UTC)')
+plt.title('Mach Number over Time',fontweight='bold')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
